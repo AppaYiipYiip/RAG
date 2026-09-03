@@ -1,0 +1,9 @@
+*.gguf 
+*.pyc 
+__pycache__/ 
+.cache/ 
+.env 
+*.log 
+old/ 
+RAG/ 
+plotly.min.js 

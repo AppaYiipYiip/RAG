@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assistant SQL Vocal</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f7fa;
+        }
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: white;
+            padding: 25px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+        .app-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        h1 {
+            margin: 0;
+            font-size: 1.4em;
+            color: #333;
+        }
+        button {
+            padding: 10px 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s, opacity 0.2s;
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        button:hover:not(:disabled) {
+            opacity: 0.9;
+        }
+        .primary-btn {
+            background-color: #0078d4;
+            color: white;
+        }
+        .secondary-btn {
+            background-color: #e0e0e0;
+            color: #333;
+        }
+        .record-btn {
+            background-color: #d64545;
+            color: white;
+        }
+        .record-btn.recording {
+            background-color: #a52f2f;
+        }
+        #recordingStatus {
+            min-height: 1.2em;
+            color: #666;
+            font-style: italic;
+            font-size: 0.9em;
+            margin-top: 6px;
+        }
+
+        /* Chat log */
+        .chat-container {
+            flex: 1;
+            min-height: 300px;
+            max-height: 60vh;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            padding: 16px;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            background: #fafbfc;
+            margin-bottom: 15px;
+        }
+        .chat-container:empty::before {
+            content: "Posez une question pour commencer.";
+            color: #999;
+            font-style: italic;
+            margin: auto;
+        }
+        .message {
+            max-width: 82%;
+            padding: 10px 14px;
+            border-radius: 12px;
+            line-height: 1.45;
+            word-wrap: break-word;
+        }
+        .message.user {
+            align-self: flex-end;
+            background: #0078d4;
+            color: white;
+            border-bottom-right-radius: 3px;
+        }
+        .message.assistant {
+            align-self: flex-start;
+            background: #eef2f7;
+            color: #222;
+            border-bottom-left-radius: 3px;
+            width: 100%;
+        }
+        .message-turn-tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+        .tab-btn {
+            padding: 5px 10px;
+            font-size: 0.82em;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            background: white;
+            color: #333;
+        }
+        .tab-btn.active {
+            background: #0078d4;
+            color: white;
+            border-color: #0078d4;
+        }
+        .turn-content {
+            white-space: pre-wrap;
+        }
+        .sql-box {
+            background: #f9f9f9;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            font-family: monospace;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .graph-placeholder {
+            color: #888;
+            font-style: italic;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 6px;
+            font-size: 0.9em;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px 10px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: 600;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 12px 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+        .error {
+            color: #d32f2f;
+            margin-bottom: 10px;
+            min-height: 1.2em;
+        }
+        .loading {
+            display: none;
+            color: #666;
+            margin-bottom: 10px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="app-header">
+            <h1>Assistant SQL</h1>
+            <button class="secondary-btn" onclick="startNewConversation()">Nouvelle conversation</button>
+        </div>
+
+        <div id="chatContainer" class="chat-container"></div>
+
+        <div id="errorDisplay" class="error"></div>
+        <div id="loadingIndicator" class="loading">Chargement en cours...</div>
+
+        <div class="input-group">
+            <input type="text" id="textInput" placeholder="Écrivez votre question en français..."
+                   onkeydown="if (event.key === 'Enter') submitText();">
+            <button class="primary-btn" onclick="submitText()">Envoyer</button>
+            <button id="recordBtn" class="record-btn" onclick="toggleRecording()">Enregistrer</button>
+        </div>
+        <div id="recordingStatus"></div>
+    </div>
+
+    <script src="{{ url_for('static', filename='vendor/plotly.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
