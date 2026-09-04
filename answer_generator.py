@@ -41,7 +41,7 @@ Données (extrait) :
 <|im_end|>
 <|im_start|>assistant
 """
-    answer = llm_utils.generate(prompt, max_tokens=300, temperature=0.1, stop=["<|im_end|>", "\n\n"]).strip()
+    answer = llm_utils.generate(prompt, max_tokens=300, temperature=0.1, stop=["<|im_end|>", "\n\n"], role="chat").strip()
     logger.info(f"Generated answer: {answer}")
     return answer
 
@@ -64,6 +64,6 @@ def generate_chat_response(question: str, history: list = None) -> str:
 <|im_end|>
 <|im_start|>assistant
 """
-    response = llm_utils.generate(prompt, max_tokens=150, temperature=0.3, stop=["<|im_end|>", "\n\n"]).strip()
+    response = llm_utils.generate(prompt, max_tokens=150, temperature=0.3, stop=["<|im_end|>", "\n\n"], role="chat").strip()
     logger.info(f"Chat response: {response}")
     return response

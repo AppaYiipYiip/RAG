@@ -1,6 +1,13 @@
 # schema_loader.py
+import logging
+import os
+
 import pyodbc
-from config import DB_SERVER, DB_NAME, DB_USER, DB_PASSWORD
+import yaml
+
+from config import DB_SERVER, DB_NAME, DB_USER, DB_PASSWORD, SCHEMA_METADATA_PATH
+
+logger = logging.getLogger(__name__)
 
 def get_connection():
     conn_str = (
@@ -86,4 +93,61 @@ def get_schema():
         schema["tables"].append(table_info)
 
     conn.close()
+    return schema
+
+
+def load_schema_metadata(path: str = None) -> dict:
+    """
+    Load an optional, hand-written enrichment file layering business
+    context on top of the auto-introspected schema: what a table/column
+    actually means, what it's called in conversation, sample values. See
+    schema_metadata.example.yaml for the format and a starter you can copy.
+
+    This is the only piece of schema knowledge that has to come from a
+    human, the structural facts (names, types, keys) are always
+    re-introspected fresh from the live database on every startup and can
+    never go stale, but no amount of introspection can tell us that
+    "poste" means job title or that a self-joined "nom_2" is the second
+    employee's name. Returns {} (schema works fine without any enrichment)
+    if the file doesn't exist.
+    """
+    if path is None:
+        path = SCHEMA_METADATA_PATH
+    if not os.path.exists(path):
+        logger.info(f"No schema metadata file at {path!r}, using the auto-introspected schema as-is.")
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        metadata = yaml.safe_load(f) or {}
+    table_count = len(metadata.get("tables", {}))
+    logger.info(f"Loaded schema metadata from {path!r}: {table_count} table(s) enriched.")
+    return metadata
+
+
+def merge_schema_metadata(schema: dict, metadata: dict) -> dict:
+    """
+    Layer descriptions/synonyms/examples from metadata onto the
+    auto-introspected schema, in place, and also return it. Purely
+    additive: any table or column not mentioned in metadata is left
+    exactly as introspected, and a table/column that no longer exists in
+    the metadata file but did exist in the schema is simply not enriched,
+    it's never removed by this.
+    """
+    tables_meta = metadata.get("tables", {})
+    for table in schema.get("tables", []):
+        table_meta = tables_meta.get(table["name"])
+        if not table_meta:
+            continue
+        if table_meta.get("description"):
+            table["description"] = table_meta["description"]
+        columns_meta = table_meta.get("columns", {})
+        for col in table.get("columns", []):
+            col_meta = columns_meta.get(col["name"])
+            if not col_meta:
+                continue
+            if col_meta.get("description"):
+                col["description"] = col_meta["description"]
+            if col_meta.get("synonyms"):
+                col["synonyms"] = col_meta["synonyms"]
+            if "example" in col_meta:
+                col["example"] = col_meta["example"]
     return schema

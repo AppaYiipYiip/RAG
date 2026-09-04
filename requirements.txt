@@ -8,3 +8,5 @@ torchaudio>=2.0
 soundfile>=0.12
 llama-cpp-python>=0.2.90
 plotly>=5.20
+PyYAML>=6.0
+requests>=2.31

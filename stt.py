@@ -15,9 +15,15 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 logger.info(f"Using device: {device}")
 
 processor = WhisperProcessor.from_pretrained(WHISPER_MODEL)
-model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL).to(device)
+# Force float32 explicitly rather than relying on whatever dtype a given
+# transformers version defaults to for this checkpoint. WhisperProcessor's
+# feature extraction always produces float32 regardless, so if the model
+# ends up in float16 while the input stays float32, every forward pass
+# fails with a dtype mismatch (seen as "Input type (float) and bias type
+# (Half) should be the same").
+model = WhisperForConditionalGeneration.from_pretrained(WHISPER_MODEL, torch_dtype=torch.float32).to(device)
 model.eval()
-logger.info(f"Whisper model loaded: {WHISPER_MODEL}")
+logger.info(f"Whisper model loaded: {WHISPER_MODEL} (dtype={model.dtype})")
 
 def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     """
@@ -58,8 +64,13 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     # Convert to numpy array (1D)
     audio_array = waveform.squeeze().numpy()
 
-    # Process input and generate transcription
-    inputs = processor(audio_array, sampling_rate=16000, return_tensors="pt").input_features.to(device)
+    # Process input and generate transcription. Cast to the model's actual
+    # dtype (not just its device): feature extraction always produces
+    # float32, so this only does something if the model isn't float32, but
+    # reading it from the model itself rather than assuming keeps this
+    # correct even if the loaded dtype ever changes later.
+    inputs = processor(audio_array, sampling_rate=16000, return_tensors="pt").input_features
+    inputs = inputs.to(device=device, dtype=model.dtype)
     with torch.no_grad():
         generated_ids = model.generate(inputs, language="french", task="transcribe")
 

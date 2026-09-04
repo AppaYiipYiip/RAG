@@ -138,7 +138,7 @@ Nouveau message de l'utilisateur : "{question}"
 <|im_end|>
 <|im_start|>assistant
 """
-    response = llm_utils.generate(prompt, max_tokens=10, temperature=0, stop=["<|im_end|>", "\n"]).strip().upper()
+    response = llm_utils.generate(prompt, max_tokens=10, temperature=0, stop=["<|im_end|>", "\n"], role="chat").strip().upper()
     logger.info(f"Decision for '{question}': {response}")
     if "FOLLOW_UP" in response:
         return "FOLLOW_UP"

@@ -8,8 +8,9 @@ import answer_generator
 import database
 import llm_utils
 import graph_generator
-from schema_loader import get_schema
+from schema_loader import get_schema, load_schema_metadata, merge_schema_metadata
 import conversation_manager
+from config import MAX_SQL_GENERATION_ATTEMPTS, LOG_LEVEL
 
 app = Flask(__name__)
 
@@ -18,23 +19,91 @@ app = Flask(__name__)
 # oversized upload never gets fully read into memory in the first place.
 app.config['MAX_CONTENT_LENGTH'] = 15 * 1024 * 1024
 
-# Configure logging
-logging.basicConfig(level=logging.INFO,
+# Configure logging. LOG_LEVEL affects the root logger, so DEBUG also
+# surfaces Flask/Werkzeug/transformers' own debug output, not just ours,
+# that's expected and fine for a debugging session, just noisier.
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO),
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Load schema once
+# Load schema once, always fresh from whichever database is configured via
+# .env at startup, no table/column names are hardcoded anywhere in the
+# pipeline. Optionally enriched with hand-written business context from
+# schema_metadata.yaml if that file exists (see
+# schema_metadata.example.yaml for the format); the app runs fine without
+# it, this is a pure addition.
 SCHEMA = get_schema()
+SCHEMA_METADATA = load_schema_metadata()
+SCHEMA = merge_schema_metadata(SCHEMA, SCHEMA_METADATA)
 logger.info(f"Schema loaded: {len(SCHEMA['tables'])} tables.")
 
-# Warm up the LLM at startup (Whisper is already loaded eagerly on import of stt).
-# Both models are small enough that eager loading is fine here.
-llm_utils.get_llm()
-logger.info("LLM model loaded.")
+# Warm up both LLM roles at startup so the first real request isn't slow
+# (Whisper is already loaded eagerly on import of stt). warm_up() is a
+# no-op for any role configured as an API backend, there's nothing local
+# to preload in that case.
+llm_utils.warm_up("reasoning")
+llm_utils.warm_up("chat")
+logger.info("LLM roles warmed up.")
 
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+def _generate_and_execute_sql(question, schema, history_text, max_attempts=MAX_SQL_GENERATION_ATTEMPTS):
+    """
+    Generate SQL and execute it. Two things can trigger another attempt,
+    fed back into the next prompt so the model can self-correct:
+      1. A hard failure: rejected as non-read-only, or a real execution
+         error (e.g. a syntax error like SQL Server rejecting LIMIT).
+      2. A soft failure: the query runs fine, but the model's own semantic
+         self-check on the result flags it as not really answering the
+         question (e.g. a suspiciously empty result).
+
+    On the final attempt, a soft (semantic) failure is still returned
+    rather than discarded, since it's the model's own opinion, not a
+    guarantee, and showing the best available result beats erroring out.
+    A hard failure on the final attempt is raised, preserving the original
+    exception type so the caller can keep distinguishing a rejected query
+    (ValueError) from a genuine execution error.
+    """
+    sql = None
+    last_feedback = None
+    last_exception = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            sql = nlp_to_sql.text_to_sql(
+                question, schema, history_text=history_text,
+                previous_sql=sql, previous_error=last_feedback
+            )
+            df = database.execute_sql(sql)
+        except Exception as e:
+            last_feedback = str(e)
+            last_exception = e
+            logger.warning(f"SQL attempt {attempt}/{max_attempts} failed to execute: {e} | SQL: {sql}")
+            continue
+
+        verdict = nlp_to_sql.evaluate_sql_result(question, sql, df)
+        if verdict["verdict"] == "OK" or attempt == max_attempts:
+            if verdict["verdict"] != "OK":
+                logger.info(
+                    f"Using result despite a RETRY self-check after exhausting attempts: {verdict['reason']}"
+                )
+            elif attempt > 1:
+                logger.info(f"SQL succeeded (and passed self-check) on attempt {attempt}/{max_attempts}")
+            return sql, df
+
+        logger.info(f"SQL attempt {attempt}/{max_attempts}: model flagged its own result: {verdict['reason']}")
+        last_feedback = verdict["reason"]
+        last_exception = None  # this was a soft signal, not a real error
+
+    # Only reachable if every attempt raised a hard exception. The (sql, df)
+    # tuple is never returned to the caller in this path, so the caller's
+    # own `sql` variable would never get bound, attach the last attempted
+    # SQL onto the exception itself so it can still be logged/reported.
+    last_exception.sql_attempted = sql
+    raise last_exception
 
 
 @app.route('/query', methods=['POST'])
@@ -94,7 +163,8 @@ def handle_query():
             'rows': df.values.tolist(),
             'answer': answer,
             'action': 'follow_up',
-            'turn_id': turn_id
+            'turn_id': turn_id,
+            'chart_worthy': graph_generator.is_chart_worthy(df)
         })
 
     # ----- NEW_QUERY: generate SQL informed by recent context, execute, then answer -----
@@ -102,21 +172,20 @@ def handle_query():
         conversation_manager.state.history[-conversation_manager.MAX_CONTEXT_TURNS_SQL:]
     )
     try:
-        sql = nlp_to_sql.text_to_sql(question, SCHEMA, history_text=sql_history)
+        sql, df = _generate_and_execute_sql(question, SCHEMA, sql_history)
         logger.info(f"Generated SQL: {sql}")
-    except Exception as e:
-        logger.error(f"SQL generation failed: {e}")
-        return jsonify({'error': f'SQL generation failed: {str(e)}'}), 500
-
-    try:
-        df = database.execute_sql(sql)
         logger.info(f"SQL execution successful. {len(df)} rows returned.")
     except ValueError as e:
-        # Raised by database.execute_sql when the query isn't read-only.
-        logger.warning(f"SQL rejected: {e} | SQL: {sql}")
+        # Raised by database.execute_sql when the query isn't read-only,
+        # and still true after every retry. sql, df were never bound here
+        # (the exception happened before that assignment could complete),
+        # so read the last attempted SQL back off the exception instead.
+        sql = getattr(e, 'sql_attempted', None)
+        logger.warning(f"SQL rejected after retries: {e} | SQL: {sql}")
         return jsonify({'error': str(e), 'sql': sql}), 400
     except Exception as e:
-        logger.error(f"SQL execution failed: {e} | SQL: {sql}")
+        sql = getattr(e, 'sql_attempted', None)
+        logger.error(f"SQL generation/execution failed after retries: {e} | SQL: {sql}")
         return jsonify({'error': f'SQL execution failed: {str(e)}', 'sql': sql}), 500
 
     answer_history = conversation_manager.format_history(
@@ -137,7 +206,8 @@ def handle_query():
         'rows': df.values.tolist(),
         'answer': answer,
         'action': 'new_query',
-        'turn_id': turn_id
+        'turn_id': turn_id,
+        'chart_worthy': graph_generator.is_chart_worthy(df)
     })
 
 
@@ -194,7 +264,8 @@ def generate_graph():
             question=turn['question'],
             answer=turn['answer'],
             sql=turn.get('sql') or '',
-            df=df
+            df=df,
+            schema=SCHEMA
         )
     except Exception as e:
         logger.error(f"Graph generation failed: {e}")

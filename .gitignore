@@ -7,3 +7,23 @@ __pycache__/
 old/ 
 RAG/ 
 plotly.min.js 
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+server.log
+
+# Large model files (GitHub rejects >100MB)
+*.gguf
+
+# Old backups
+old/
+
+# Servers folder (if it contains large data)
+servers/
+
+# Local temp files
+*.example.yaml
